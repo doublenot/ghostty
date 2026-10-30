@@ -215,18 +215,20 @@ pub fn add(
 
     // POSIX C imports that are used throughout Ghostty on a general basis.
     // (note: errno is C stdlib but we just include it here because that's
-    // where it's generally included otherwise)
-    try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
-        .source = .{ .includes = .{ .files = &.{
-            .{ .path = "errno.h" },
-            .{ .path = "pwd.h" },
-            .{ .path = "signal.h" },
-            .{ .path = "sys/types.h" },
-            .{ .path = "unistd.h" },
-        } } },
-        .target = target,
-        .optimize = optimize,
-    });
+    // where it's generally included otherwise). Windows has none of these.
+    if (target.result.os.tag != .windows) {
+        try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
+            .source = .{ .includes = .{ .files = &.{
+                .{ .path = "errno.h" },
+                .{ .path = "pwd.h" },
+                .{ .path = "signal.h" },
+                .{ .path = "sys/types.h" },
+                .{ .path = "unistd.h" },
+            } } },
+            .target = target,
+            .optimize = optimize,
+        });
+    }
 
     // Freetype. We always include this even if our font backend doesn't
     // use it because Dear Imgui uses Freetype.
@@ -653,15 +655,18 @@ pub fn add(
         }
     }
 
-    // If we're building an exe then we have additional dependencies.
-    if (step.kind != .lib) {
-        // We always statically compile glad
+    // We always statically compile glad into exes, and into libghostty
+    // when it renders with OpenGL (e.g. on Windows).
+    if (step.kind != .lib or self.config.renderer == .opengl) {
         step.root_module.addIncludePath(b.path("vendor/glad/include/"));
         step.root_module.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
             .flags = &.{},
         });
+    }
 
+    // If we're building an exe then we have additional dependencies.
+    if (step.kind != .lib) {
         // Link EGL for GTK.
         if (self.config.app_runtime == .gtk) {
             step.root_module.addCSourceFile(.{

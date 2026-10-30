@@ -19,6 +19,9 @@ dsym: ?std.Build.LazyPath,
 pkg_config: ?std.Build.LazyPath,
 pkg_config_static: ?std.Build.LazyPath,
 
+/// The import library for a Windows DLL, which consumers link against.
+implib: ?std.Build.LazyPath = null,
+
 pub fn initStatic(
     b: *std.Build,
     deps: *const SharedDeps,
@@ -94,7 +97,13 @@ pub fn initShared(
     };
 
     const lib = b.addLibrary(.{
-        .name = "ghostty",
+        // On Windows the DLL's name is recorded in its import library, so
+        // it must match the installed "ghostty-internal.dll" for consumers
+        // linking the import library to load it.
+        .name = if (deps.config.target.result.os.tag == .windows)
+            "ghostty-internal"
+        else
+            "ghostty",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main_c.zig"),
@@ -175,6 +184,10 @@ pub fn initShared(
         .dsym = dsymutil,
         .pkg_config = pcs.shared,
         .pkg_config_static = pcs.static,
+        .implib = if (deps.config.target.result.os.tag == .windows)
+            lib.getEmittedImplib()
+        else
+            null,
     };
 }
 
@@ -215,6 +228,14 @@ pub fn install(self: *const GhosttyLib, name: []const u8) void {
     const step = b.getInstallStep();
     const lib_install = b.addInstallLibFile(self.output, name);
     step.dependOn(&lib_install.step);
+
+    if (self.implib) |implib| {
+        const stem = std.fs.path.stem(name);
+        step.dependOn(&b.addInstallLibFile(
+            implib,
+            b.fmt("{s}.lib", .{stem}),
+        ).step);
+    }
 
     if (self.pkg_config) |pc| {
         step.dependOn(&b.addInstallFileWithDir(

@@ -20,3 +20,11 @@ pub fn pipe() ![2]posix.fd_t {
         },
     }
 }
+
+/// Close one end of a pipe created with `pipe`. Errors are ignored.
+pub fn close(fd: posix.fd_t) void {
+    switch (builtin.target.os.tag) {
+        else => _ = posix.system.close(fd),
+        .windows => _ = windows.exp.kernel32.CloseHandle(fd),
+    }
+}

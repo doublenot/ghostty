@@ -66,14 +66,12 @@ pub fn init(opts: InitOpts) !void {
         },
         .args = switch (opts) {
             .main, .tool => |m| m.args,
-            // TODO: Using the C API from Windows is unsupported at this time.
-            //
-            // When do we plan on supporting Windows, it's recommended to
-            // ensure that the C API can take a UNICODE_STRING (aka []16, a
-            // WTF-16 string) so that it can just be passed into
-            // std.process.Args.Vector directly.
+            // On Windows, args are the WTF-16 command line rather than an
+            // argv array. libghostty runs in the host's process, so read
+            // the process command line just like std's start code does,
+            // and ignore argc/argv.
             .c => |c| .{ .vector = if (builtin.target.os.tag == .windows)
-                return error.UnsupportedOSForCApi
+                std.os.windows.peb().ProcessParameters.CommandLine.slice()
             else
                 c.argv[0..c.argc] },
         },

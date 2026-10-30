@@ -382,6 +382,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    windows: Windows,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -395,6 +396,13 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    pub const Windows = if (builtin.target.os.tag == .windows) struct {
+        /// The HWND the host presents the surface's frames in. The
+        /// renderer draws offscreen; the host pulls finished frames
+        /// with `ghostty_surface_take_frame`.
+        hwnd: *anyopaque,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -404,6 +412,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        windows: extern struct {
+            hwnd: ?*anyopaque,
         },
     };
 
@@ -424,6 +436,13 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .windows => if (Windows != void) windows: {
+                const config = c_platform.windows;
+                const hwnd = config.hwnd orelse
+                    break :windows error.HWNDMustBeSet;
+                break :windows .{ .windows = .{ .hwnd = hwnd } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -434,6 +453,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    windows = 3,
 };
 
 pub const EnvVar = extern struct {
@@ -1989,6 +2009,62 @@ pub const CAPI = struct {
     /// call as soon as possible (NOW if possible).
     export fn ghostty_surface_draw(surface: *Surface) void {
         surface.draw();
+    }
+
+    // ghostty_surface_frame_s
+    const Frame = extern struct {
+        width: u32,
+        height: u32,
+        pixels: ?[*]const u8,
+        handle: ?*anyopaque,
+    };
+
+    /// Take the most recently rendered frame for renderers that draw
+    /// offscreen (OpenGL). The host should call this when it receives
+    /// GHOSTTY_ACTION_RENDER. Returns false if there is no new frame.
+    /// A taken frame must be released with ghostty_surface_free_frame.
+    export fn ghostty_surface_take_frame(surface: *Surface, result: *Frame) bool {
+        const ExportedFrame = renderer.Renderer.ExportedFrame;
+        if (comptime ExportedFrame == void) return false;
+
+        const frame = surface.core_surface.renderer.takeFrame() orelse return false;
+        const memory = switch (frame) {
+            .memory => |v| v,
+
+            // The embedded apprt has no way to hand a DMABUF to the
+            // host, so these are dropped.
+            .dmabuf => {
+                frame.deinit();
+                return false;
+            },
+        };
+
+        const owned = global.alloc().create(ExportedFrame.Memory) catch |err| {
+            log.warn("error allocating frame err={}", .{err});
+            memory.deinit();
+            return false;
+        };
+        owned.* = memory;
+
+        result.* = .{
+            .width = memory.width,
+            .height = memory.height,
+            .pixels = memory.pixels.ptr,
+            .handle = owned,
+        };
+        return true;
+    }
+
+    export fn ghostty_surface_free_frame(_: *Surface, frame: *Frame) void {
+        const ExportedFrame = renderer.Renderer.ExportedFrame;
+        if (comptime ExportedFrame == void) return;
+
+        const handle = frame.handle orelse return;
+        const owned: *ExportedFrame.Memory = @ptrCast(@alignCast(handle));
+        owned.deinit();
+        global.alloc().destroy(owned);
+        frame.handle = null;
+        frame.pixels = null;
     }
 
     /// Update the size of a surface. This will trigger resize notifications
