@@ -2,11 +2,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void, CString};
+use std::fs::{self, File};
 use std::mem::{size_of, zeroed};
+use std::os::windows::io::IntoRawHandle;
+use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::Console::{GetStdHandle, SetStdHandle, STD_ERROR_HANDLE};
 use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
@@ -48,9 +52,38 @@ pub fn get() -> &'static App {
     unsafe { &*APP.load(Ordering::Acquire) }
 }
 
+/// When started without a stderr, e.g. from a shortcut, send libghostty's
+/// logs and any panic trace to %LOCALAPPDATA%\ghostty\debug.log so that
+/// bugs can still be diagnosed.
+unsafe fn log_to_file_if_detached() {
+    let stderr = GetStdHandle(STD_ERROR_HANDLE);
+    if !stderr.is_null() && stderr != INVALID_HANDLE_VALUE {
+        return;
+    }
+
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let dir = Path::new(&local).join("ghostty");
+    let _ = fs::create_dir_all(&dir);
+    let Ok(file) = File::create(dir.join("debug.log")) else {
+        return;
+    };
+
+    // Every later write goes through this handle, so it is never closed.
+    SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle());
+    if std::env::var_os("GHOSTTY_LOG").is_none() {
+        std::env::set_var("GHOSTTY_LOG", "stderr");
+    }
+}
+
 pub fn run() -> i32 {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+        if cfg!(debug_assertions) {
+            log_to_file_if_detached();
+        }
 
         // libghostty parses CLI arguments (e.g. --font-size=14) from argv.
         let args: Vec<CString> = std::env::args()

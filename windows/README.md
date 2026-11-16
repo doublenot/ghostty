@@ -35,7 +35,18 @@ cargo run
 `build.rs` links against `../zig-out/lib` and copies the DLL next to the
 executable. Set `GHOSTTY_LIB_DIR` to use a libghostty from elsewhere.
 
-Debug builds keep a console window so libghostty's logs are visible.
+## Logs
+
+The app never opens a console window: debug logs written to a Windows
+Terminal console stalled rendering. To see libghostty's logs, set
+`GHOSTTY_LOG=stderr` and send stderr to a file:
+
+```powershell
+$env:GHOSTTY_LOG = 'stderr'; cargo run 2> ghostty.log
+```
+
+A debug build started without a stderr, e.g. from a shortcut, writes
+its logs and any crash trace to `%LOCALAPPDATA%\ghostty\debug.log`.
 
 ## Status
 

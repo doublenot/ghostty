@@ -6,8 +6,10 @@
 //! renders each surface offscreen and signals GHOSTTY_ACTION_RENDER when
 //! a frame is ready, which we pull with `ghostty_surface_take_frame`.
 
-// Keep the console in debug builds so libghostty's logs are visible.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// No console window, even in debug builds: blocking writes to a console
+// stall libghostty's threads. Run from a terminal, stderr is still
+// inherited; debug builds started without one log to a file instead.
+#![windows_subsystem = "windows"]
 
 mod app;
 mod clipboard;
