@@ -2193,6 +2193,14 @@ fn resolvePathForOpening(
     path: []const u8,
 ) Allocator.Error!?[]const u8 {
     if (!std.fs.path.isAbsolute(path)) {
+        // Windows file names can't contain these, so such a path can't
+        // exist. Asking anyway fails with a status that Zig's std treats
+        // as a programmer bug (a panic in debug builds), and URLs such as
+        // "https://..." always reach here because of their colon.
+        if (comptime builtin.os.tag == .windows) {
+            if (std.mem.indexOfAny(u8, path, "<>:\"|?*") != null) return null;
+        }
+
         const terminal_pwd = self.io.terminal.getPwd() orelse {
             return null;
         };
