@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const assert = @import("../quirks.zig").inlineAssert;
 const fontconfig = @import("fontconfig");
+const freetype = @import("freetype");
 const macos = @import("macos");
 const opentype = @import("opentype.zig");
 const options = @import("main.zig").options;
@@ -1161,6 +1162,12 @@ pub const Windows = struct {
         fn matches(self: *const DiscoverIterator, face: *Face) bool {
             if (self.desc.family) |family| {
                 if (!familyMatches(face, family)) return false;
+
+                // Families usually ship each style as its own file under
+                // the same family name. Without this every style would get
+                // whichever file the directory lists first, and "-Bold"
+                // sorts before "-Regular".
+                if (!styleMatches(face, self.desc)) return false;
             }
             if (self.desc.codepoint != 0) {
                 if (face.glyphIndex(self.desc.codepoint) == null) return false;
@@ -1210,6 +1217,24 @@ pub const Windows = struct {
         var buf: [256]u8 = undefined;
         const sfnt = face.name(&buf) catch "";
         return sfnt.len > 0 and std.ascii.eqlIgnoreCase(sfnt, family);
+    }
+
+    /// Compare a face's style against the descriptor: by name when one
+    /// was requested (`font-style`), otherwise by its bold and italic
+    /// traits. Faces missing a style are synthesized later by the
+    /// collection, so being strict here is safe.
+    fn styleMatches(face: *Face, desc: Descriptor) bool {
+        const handle = face.face.handle;
+        if (desc.style) |style| {
+            const ft_style: ?[*:0]const u8 = handle.*.style_name;
+            const name = ft_style orelse return false;
+            return std.ascii.eqlIgnoreCase(std.mem.span(name), style);
+        }
+
+        const flags = handle.*.style_flags;
+        const bold = (flags & freetype.c.FT_STYLE_FLAG_BOLD) != 0;
+        const italic = (flags & freetype.c.FT_STYLE_FLAG_ITALIC) != 0;
+        return bold == desc.bold and italic == desc.italic;
     }
 };
 
@@ -1416,4 +1441,38 @@ test "windows" {
     var face = (try it.next()) orelse return error.TestFontNotFound;
     defer face.deinit();
     try testing.expect(face.hasCodepoint('A', null));
+}
+
+test "windows style" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+
+    var win = Windows.init(lib);
+    defer win.deinit();
+
+    // Arial ships each style as a separate file, all in the "Arial" family.
+    const cases = [_]struct { desc: Descriptor, bold: bool, italic: bool }{
+        .{ .desc = .{ .family = "Arial" }, .bold = false, .italic = false },
+        .{ .desc = .{ .family = "Arial", .bold = true }, .bold = true, .italic = false },
+        .{ .desc = .{ .family = "Arial", .italic = true }, .bold = false, .italic = true },
+        .{ .desc = .{ .family = "Arial", .bold = true, .italic = true }, .bold = true, .italic = true },
+        .{ .desc = .{ .family = "Arial", .style = "Bold Italic" }, .bold = true, .italic = true },
+    };
+
+    for (cases) |case| {
+        var it = try win.discover(alloc, case.desc);
+        defer it.deinit();
+
+        var face = (try it.next()) orelse return error.TestFontNotFound;
+        defer face.deinit();
+
+        const flags = face.win.?.peek.face.handle.*.style_flags;
+        try testing.expectEqual(case.bold, (flags & freetype.c.FT_STYLE_FLAG_BOLD) != 0);
+        try testing.expectEqual(case.italic, (flags & freetype.c.FT_STYLE_FLAG_ITALIC) != 0);
+    }
 }
