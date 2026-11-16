@@ -30,6 +30,7 @@ use crate::{clipboard, window};
 const WM_APP_WAKEUP: u32 = WM_APP + 1;
 const WM_APP_QUIT: u32 = WM_APP + 2;
 const WM_APP_NEW_WINDOW: u32 = WM_APP + 3;
+const WM_APP_OPEN_URL: u32 = WM_APP + 4;
 
 /// State shared by every window. Only touched on the main thread.
 pub struct App {
@@ -201,6 +202,19 @@ unsafe extern "system" fn message_wndproc(
             window::Window::create(config);
             0
         }
+        WM_APP_OPEN_URL => {
+            let url = Box::from_raw(wparam as *mut Vec<u16>);
+            let verb = wide("open");
+            ShellExecuteW(
+                null_mut(),
+                verb.as_ptr(),
+                url.as_ptr(),
+                null(),
+                null(),
+                SW_SHOWNORMAL,
+            );
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -295,21 +309,21 @@ unsafe extern "C" fn action(
             true
         }
 
+        // Posted because this arrives with the surface's renderer lock held,
+        // and ShellExecuteW can pump messages: a mouse move or paint that
+        // re-entered libghostty from inside it would deadlock.
         GHOSTTY_ACTION_OPEN_URL => {
             let url = action.action.open_url;
             if url.url.is_null() {
                 return false;
             }
             let bytes = std::slice::from_raw_parts(url.url as *const u8, url.len);
-            let url = wide(&String::from_utf8_lossy(bytes));
-            let verb = wide("open");
-            ShellExecuteW(
-                null_mut(),
-                verb.as_ptr(),
-                url.as_ptr(),
-                null(),
-                null(),
-                SW_SHOWNORMAL,
+            let url = Box::new(wide(&String::from_utf8_lossy(bytes)));
+            PostMessageW(
+                wakeup_hwnd,
+                WM_APP_OPEN_URL,
+                Box::into_raw(url) as WPARAM,
+                0,
             );
             true
         }
